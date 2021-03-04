@@ -1,0 +1,220 @@
+
+
+ 
+
+%let cutSize = 500000000; /* 500mb */
+
+
+ 
+
+ 
+
+ 
+
+data    OPDATA.AU_CUR_DEF_Flag_&eop.
+
+        OPDATA.NZ_CUR_DEF_Flag_&eop.;
+
+    set OPDATA.CUR_DEF_Flag_&eop.;
+
+         if product_seg in ('NZ CL','NZ GEM','NZ ONE')                  then output OPDATA.NZ_CUR_DEF_Flag_&eop.;
+
+    else if product_seg in ('CL','D28','GEM','GO','LFS Direct','MYER')  then output OPDATA.AU_CUR_DEF_Flag_&eop.;
+
+run;
+
+ 
+
+ 
+
+proc sql; select count(*) as totalAUObs format 20. into: totalAUObs from OPDATA.AU_CUR_DEF_Flag_&eop.; quit;
+
+proc sql noprint; select count(*) into: totalNZObs from OPDATA.NZ_CUR_DEF_Flag_&eop.; quit;
+
+%put &=totalNZObs.  &=totalAUObs.;
+
+ 
+
+proc sql;
+
+    create table workspace_au  as
+
+        select  memname     as Dataset
+
+               ,filesize    as DatasetSize /*format=sizekmg10.1*/
+
+        from dictionary.tables
+
+        where libname='OPDATA'
+
+        and upcase(memname) in ("NZ_CUR_DEF_FLAG_&EOP.","AU_CUR_DEF_FLAG_&EOP.")
+
+        and memtype='DATA'
+
+    order by DatasetSize desc;
+
+quit;
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+data calculateDiv;
+
+    set workspace_au;
+
+    Div = ceil(DatasetSize / &cutSize.);
+
+    if Dataset = "NZ_CUR_DEF_FLAG_202011";
+
+run;
+
+ 
+
+ 
+
+proc sql noprint; select count(*) into: totalIterations from calculateDiv; quit;
+
+ 
+
+%macro iterate_split;   /*outer macro iterates through datasets, while inner macro chops the outer dataset into chunks */
+
+    %DO I=1 %TO &totalIterations.;
+
+        %put NOTE: CURRENT OUTER ITERATION IS &i.;
+
+        data _null_;
+
+            p = &i.;
+
+            set calculateDiv point=p;
+
+                call symputx('div',div,'g');
+
+                call symputx('DatasetSize',DatasetSize,'g');
+
+                call symputx('Dataset',Dataset,'g');
+
+            stop;
+
+        run;
+
+ 
+
+        proc sql;
+
+            create table countObs as /*114,807,812*/
+
+                select count(*) as totalobs
+
+            from opdata.&Dataset.;
+
+        quit;
+
+ 
+
+ 
+
+        data calculate;
+
+            set countObs;
+
+                    numdiv = &div.;
+
+                splitObs = round(totalobs/numdiv,1);
+
+                call symputx("totalObs",totalobs,"g");
+
+                call symputx("splitObs_constant",splitObs,"g"); /*4,252,141*/
+
+ 
+
+        run;
+
+ 
+
+                data opdata.&Dataset._n_;
+
+                    set opdata.&Dataset.;
+
+                    obsNo = _n_;
+
+                run;
+
+ 
+
+        %macro iterate_split_nested;
+
+            %DO I=1 %TO &div.;
+
+            %put NOTE: CURRENT INNER ITERATION IS &i.;
+
+ 
+
+            %let startobs = 0; /*reset*/
+
+ 
+
+                data _null_/*&i.*/;
+
+                    if &i. = 1 then do;                                 /*if it's the first iteration, then                                                 */
+
+                        call symputx("startObs",1,'g');                 /*start from 1                                                                      */
+
+                        call symputx("endobs",&splitObs_constant.,'g'); /*and end at the point to make the dataset the size set in the cutSize macro        */
+
+                    end;
+
+                    if &i. ne 1 then do;                                /*else if it's not the 1st iteration then...                                        */
+
+                        endobs      = &splitObs_constant.*&i.;          /*the end point is the cutsize macro value multiplied by the iteration number       */
+
+                        startObs    = endobs-&splitObs_constant.;       /*while the starting point is the above, minus the cutsize macro value              */
+
+                        call symputx("startObs",startobs,'g');          /* eg 5*10 = 50 & 50-5 = 45   --  so the start point would be 45, end point is 50   */
+
+                        call symputx("endobs",endobs,'g');
+
+                    end;
+
+                run;
+
+ 
+
+               %put &=startObs. &=endobs. &=splitObs_constant. &=div. &=i.;
+
+ 
+
+ 
+
+                data /*p_temp.*/opdata.&Dataset._&i.;
+
+                    set opdata.&Dataset._n_;
+
+                    where obsNo ge &startObs.
+
+                      and obsNo lt &endobs.;
+
+                run;
+
+            %end;
+
+        %mend iterate_split_nested;
+
+        %iterate_split_nested;
+
+ 
+
+    %end;
+
+%mend iterate_split;
+
+%iterate_split;
+
+ 
